@@ -1,0 +1,199 @@
+# wolweb - Minimal Wake-on-LAN Web Service
+
+[![CI](https://github.com/yourusername/wolweb/actions/workflows/ci.yml/badge.svg)](https://github.com/yourusername/wolweb/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A lightweight, minimal web service for remotely waking up computers on your home network via Wake-on-LAN (WoL). Perfect for Raspberry Pi or similar single-board computers as a systemd service.
+
+## Overview
+
+`wolweb` provides a simple HTTP interface to:
+- Send Wake-on-LAN packets to power on home servers
+- Monitor the online status of target devices
+- Manage WoL requests with cooldown protection
+
+## Use Case
+
+Deployed on a Raspberry Pi or similar device within your home network, `wolweb` allows you to:
+1. Connect via VPN to your home network
+2. Access the web interface
+3. Wake up your home server or other devices
+4. Access your server after it's online
+
+## Features
+
+- **Minimal Web UI** - Simple HTML interface for sending WoL packets
+- **Status Monitoring** - Continuous checks for device online status
+- **Cooldown Protection** - Prevents WoL packet spam
+- **Quick Links** - Show service links when server is online
+- **Easy Deployment** - Single binary, runs as systemd service
+- **Configurable** - TOML config file or command-line flags
+
+## Installation
+
+### Prerequisites
+
+- Go 1.16+ (for building)
+- Linux system with systemd
+
+### Build from Source
+
+```bash
+make build
+```
+
+This compiles the binary and places it in `/usr/local/bin/wolweb`.
+
+Or manually:
+
+```bash
+go build -o wolweb wolweb.go
+sudo cp wolweb /usr/local/bin/
+```
+
+## Usage
+
+### Command-line Flags
+
+```bash
+wolweb [flags]
+```
+
+- `-config` - Path to TOML config file (optional, overrides defaults)
+- `-listen` - Address to listen on (default: `:8080`)
+- `-checkAddr` - Address to check for online status, format `host:port` (default: `192.168.1.10:22`)
+- `-checkTimeout` - Timeout for each connectivity check (default: `3s`)
+- `-checkEvery` - Interval between status checks (default: `30s`)
+- `-mac` - MAC address of the target device (required, format: `XX:XX:XX:XX:XX:XX`)
+- `-broadcast` - Broadcast address for WoL packet (default: `255.255.255.255:9`)
+- `-cooldown` - Cooldown between WoL requests (default: `10s`)
+- `-title` - Page title displayed in web UI (default: `WoL Service`)
+
+### Configuration File (TOML)
+
+You can use a TOML configuration file for easier management:
+
+```bash
+wolweb -config /etc/wolweb/config.toml
+```
+
+Example configuration file:
+
+```toml
+[server]
+mac = "AA:BB:CC:DD:EE:FF"
+checkAddr = "192.168.1.100:22"
+checkTimeout = "3s"
+checkEvery = "30s"
+broadcast = "255.255.255.255:9"
+cooldown = "10s"
+title = "Home Server WoL"
+listen = ":8080"
+
+# Links to display when server is online
+[[links]]
+name = "Nextcloud"
+url = "https://nextcloud.home:8443"
+icon = "☁️"
+
+[[links]]
+name = "Home Assistant"
+url = "http://192.168.1.100:8123"
+icon = "🏠"
+
+[[links]]
+name = "Jellyfin"
+url = "http://192.168.1.100:8096"
+icon = "🎬"
+```
+
+**Important:** When the server is **online**, the UI will show all configured links as clickable buttons with their icons. When offline, only the WoL button is available.
+
+### Example
+
+Using flags:
+```bash
+wolweb -mac "AA:BB:CC:DD:EE:FF" -checkAddr "192.168.1.100:22" -listen ":8080" -title "Home Server WoL"
+```
+
+Using config file:
+```bash
+wolweb -config wolweb.toml
+```
+
+## Systemd Service Setup
+
+1. Create the service file:
+
+```bash
+sudo cp wolweb.service /etc/systemd/system/
+```
+
+2. Edit the service file to configure your settings:
+
+```bash
+sudo systemctl edit wolweb
+```
+
+3. Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable wolweb
+sudo systemctl start wolweb
+```
+
+4. Check status:
+
+```bash
+sudo systemctl status wolweb
+```
+
+## Example Systemd Unit
+
+See [wolweb.service](wolweb.service) for a complete example configuration.
+
+## Build and Installation with Makefile
+
+```bash
+make build          # Compile and install to /usr/local/bin
+make clean          # Remove built binaries
+make install        # Install systemd service file
+make uninstall      # Remove systemd service file
+```
+
+## CI/CD
+
+This project uses GitHub Actions for continuous integration:
+
+- **Linting** - golangci-lint checks code quality
+- **Testing** - Runs all tests with coverage reporting
+- **Multi-platform builds** - Automatically builds for:
+  - Linux (amd64, arm, arm64) - Perfect for Raspberry Pi!
+  - macOS (amd64, arm64)
+  - Windows (amd64)
+- **Automated Releases** - Tags trigger automatic binary releases
+
+### Building Different Architectures Locally
+
+```bash
+# Linux ARM (Raspberry Pi)
+GOOS=linux GOARCH=arm GOARM=7 go build -o wolweb-rpi wolweb.go
+
+# Linux ARM64
+GOOS=linux GOARCH=arm64 go build -o wolweb-arm64 wolweb.go
+
+# Linux x86-64
+GOOS=linux GOARCH=amd64 go build -o wolweb-amd64 wolweb.go
+```
+
+## Security Considerations
+
+- **VPN Access Only** - Run behind a VPN or private network only
+- **Firewall Rules** - Restrict HTTP access to trusted sources
+- **No Authentication** - This service has no built-in authentication; rely on network security
+- **HTTPS** - Consider using a reverse proxy (nginx) with SSL/TLS for production
+
+## License
+
+MIT

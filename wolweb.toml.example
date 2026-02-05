@@ -1,0 +1,49 @@
+# WolWeb Configuration
+# Configuration file for wolweb service
+
+[server]
+# MAC address of the device to wake
+mac = "AA:BB:CC:DD:EE:FF"
+
+# Address to check for online status (host:port)
+checkAddr = "192.168.1.100:22"
+
+# TCP check timeout
+checkTimeout = "3s"
+
+# How often to refresh status in background
+checkEvery = "30s"
+
+# Broadcast address for WoL packet
+broadcast = "255.255.255.255:9"
+
+# Minimum time between WoL sends (cooldown)
+cooldown = "10s"
+
+# Web UI title
+title = "Home Server WoL"
+
+# Listen address for the HTTP server
+listen = ":8080"
+
+# Links to display when server is online
+# These will only be shown in the UI when the server is detected as online
+[[links]]
+name = "Nextcloud"
+url = "https://nextcloud.home:8443"
+icon = "☁️"
+
+[[links]]
+name = "Home Assistant"
+url = "http://192.168.1.100:8123"
+icon = "🏠"
+
+[[links]]
+name = "Jellyfin"
+url = "http://192.168.1.100:8096"
+icon = "🎬"
+
+[[links]]
+name = "SSH"
+url = "ssh://user@192.168.1.100"
+icon = "🖥️"

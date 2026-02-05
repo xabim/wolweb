@@ -1,0 +1,28 @@
+linters:
+  enable:
+    - vet
+    - gofmt
+    - govet
+    - errcheck
+    - gosimple
+    - gocritic
+    - staticcheck
+    - unused
+    - ineffassign
+    - misspell
+
+linters-settings:
+  govet:
+    check-shadowing: true
+  gofmt:
+    simplify: true
+  gocritic:
+    enabled-tags:
+      - performance
+      - style
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck

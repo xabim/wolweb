@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="refresh" content="30">
+  <title>{{.Title}}</title>
+  <style>
+    body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:#0b1020; color:#e5e7eb; margin:0; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 28px 18px; }
+    .card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+    .row { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    .title { font-size: 20px; font-weight: 700; letter-spacing: 0.2px; }
+    .pill { display:inline-flex; align-items:center; gap:10px; padding: 10px 12px; border-radius:999px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.10); }
+    .dot { width: 10px; height: 10px; border-radius: 999px; background: {{.Badge}}; box-shadow: 0 0 0 6px rgba(255,255,255,0.02); }
+    .status { font-weight:700; }
+    .muted { color:#9ca3af; font-size: 13px; }
+    .btn { appearance:none; border:0; border-radius: 12px; padding: 12px 14px; font-weight: 700; cursor:pointer; }
+    .btn-wake { background:#2563eb; color:white; }
+    .btn-wake:disabled { opacity: 0.45; cursor:not-allowed; }
+    .grid { display:grid; grid-template-columns: 1fr; gap: 12px; margin-top: 12px; }
+    .k { color:#9ca3af; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .v { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .foot { margin-top: 10px; color:#6b7280; font-size: 12px; }
+    .links-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.10); }
+    .links-title { color:#9ca3af; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; }
+    .links-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+    .link-btn { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px; background: rgba(37,99,235,0.15); border: 1px solid rgba(37,99,235,0.3); border-radius: 12px; text-decoration: none; color: #60a5fa; font-size: 12px; font-weight: 600; transition: all 0.2s; }
+    .link-btn:hover { background: rgba(37,99,235,0.25); border-color: rgba(37,99,235,0.5); transform: translateY(-2px); }
+    .link-icon { font-size: 24px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="title">{{.Title}}</div>
+          <div class="muted">{{.SubStatus}} — updated: {{.LastCheckStr}}</div>
+        </div>
+        <div class="pill">
+          <span class="dot"></span>
+          <span class="status">{{.Status}}</span>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <div class="k">Check Address</div>
+          <div class="v">{{.CheckAddr}}</div>
+        </div>
+        <div>
+          <div class="k">Last WoL</div>
+          <div class="v">{{.LastWOLStr}}</div>
+        </div>
+        <div>
+          <div class="k">Errors</div>
+          <div class="v">{{.LastError}}</div>
+        </div>
+      </div>
+
+      <form method="POST" action="/wake" style="margin-top:14px">
+        <button class="btn btn-wake" type="submit" {{.DisabledAttr}}>Wake On LAN</button>
+      </form>
+
+      {{if .Links}}
+      {{if eq .Status "ON"}}
+      <div class="links-section">
+        <div class="links-title">Available Services</div>
+        <div class="links-grid">
+          {{range .Links}}
+          <a href="{{.URL}}" class="link-btn" target="_blank" rel="noopener noreferrer">
+            <span class="link-icon">{{.Icon}}</span>
+            <span>{{.Name}}</span>
+          </a>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+      {{end}}
+
+      <div class="foot">Local time: {{.Now}}</div>
+    </div>
+  </div>
+</body>
+</html>

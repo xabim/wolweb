@@ -1,0 +1,22 @@
+# Binaries
+wolweb
+wolweb.exe
+build/
+dist/
+
+# Go
+*.o
+*.a
+*.so
+.DS_Store
+
+# Test coverage
+coverage.txt
+*.out
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
