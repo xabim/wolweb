@@ -17,7 +17,7 @@ checkEvery = "30s"
 # Broadcast address for WoL packet
 broadcast = "255.255.255.255:9"
 
-# Minimum time between WoL sends (cooldown)
+# Minimum time between WoL sends; the button is disabled and a notice shown meanwhile
 cooldown = "10s"
 
 # Web UI title

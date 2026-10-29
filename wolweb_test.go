@@ -206,3 +206,15 @@ func TestParseConfigRequiresConfigOrFlags(t *testing.T) {
 		t.Fatalf("expected no-configuration error, got %v", err)
 	}
 }
+
+func TestHomeShowsCooldown(t *testing.T) {
+	s := testServer(t, config{checkAddr: "127.0.0.1:1", wolCooldown: time.Hour})
+	s.st.lastWOL = time.Now().Add(-time.Minute)
+
+	rec := httptest.NewRecorder()
+	s.handleHome(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "Packet sent") || !strings.Contains(body, "disabled") {
+		t.Errorf("expected cooldown notice and disabled button, got:\n%s", body)
+	}
+}

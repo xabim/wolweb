@@ -91,6 +91,9 @@ type pageData struct {
 	LastWOLStr   string
 	LastError    string
 	Now          string
+	CoolingDown  bool
+	CooldownMsg  string
+	RefreshSecs  int
 	Links        []linkView
 }
 
@@ -269,6 +272,19 @@ func (s *server) handleHome(w http.ResponseWriter, _ *http.Request) {
 	if online {
 		data.SubStatus = "Online"
 		data.Status = "ON"
+	}
+
+	data.RefreshSecs = 30
+	if !lastWOL.IsZero() {
+		if left := s.cfg.wolCooldown - time.Since(lastWOL); left > 0 && !online {
+			data.CoolingDown = true
+			data.CooldownMsg = fmt.Sprintf("Packet sent %s ago, wait %s before sending another",
+				time.Since(lastWOL).Round(time.Second), left.Round(time.Second))
+			// Reload right when the button becomes available again.
+			if secs := int(left.Seconds()) + 1; secs < data.RefreshSecs {
+				data.RefreshSecs = secs
+			}
+		}
 	}
 
 	// Render to a buffer so a template failure yields a clean 500 instead of

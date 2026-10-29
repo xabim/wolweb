@@ -66,7 +66,7 @@ wolweb [flags]
 - `-checkEvery` - Interval between status checks (default: `5m`)
 - `-mac` - MAC address of the target device (required, format: `XX:XX:XX:XX:XX:XX`)
 - `-broadcast` - Broadcast address for WoL packet (default: `255.255.255.255:9`)
-- `-cooldown` - Cooldown between WoL requests (default: `30s`)
+- `-cooldown` - Cooldown between WoL requests (UI disables the button and shows a notice meanwhile) (default: `30s`)
 - `-title` - Page title displayed in web UI (default: `Server Power`)
 
 ### Configuration File (TOML)
