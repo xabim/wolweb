@@ -33,7 +33,7 @@ Deployed on a Raspberry Pi or similar device within your home network, `wolweb` 
 
 ### Prerequisites
 
-- Go 1.16+ (for building)
+- Go 1.26+ (for building)
 - Linux system with systemd
 
 ### Build from Source
@@ -42,13 +42,13 @@ Deployed on a Raspberry Pi or similar device within your home network, `wolweb` 
 make build
 ```
 
-This compiles the binary and places it in `/usr/local/bin/wolweb`.
+This compiles `./wolweb`. Run `make install-bin` to also install it to `/usr/local/bin/wolweb`.
 
 Or manually:
 
 ```bash
-go build -o wolweb wolweb.go
-sudo cp wolweb /usr/local/bin/
+go build -o wolweb .
+sudo install -m 0755 wolweb /usr/local/bin/
 ```
 
 ## Usage
@@ -59,15 +59,15 @@ sudo cp wolweb /usr/local/bin/
 wolweb [flags]
 ```
 
-- `-config` - Path to TOML config file (optional, overrides defaults)
+- `-config` - Path to TOML config file (optional). Precedence: defaults < TOML file < explicitly set flags
 - `-listen` - Address to listen on (default: `:8080`)
-- `-checkAddr` - Address to check for online status, format `host:port` (default: `192.168.1.10:22`)
-- `-checkTimeout` - Timeout for each connectivity check (default: `3s`)
-- `-checkEvery` - Interval between status checks (default: `30s`)
+- `-checkAddr` - Address to check for online status, format `host:port` (required)
+- `-checkTimeout` - Timeout for each connectivity check (default: `1s`)
+- `-checkEvery` - Interval between status checks (default: `5m`)
 - `-mac` - MAC address of the target device (required, format: `XX:XX:XX:XX:XX:XX`)
 - `-broadcast` - Broadcast address for WoL packet (default: `255.255.255.255:9`)
-- `-cooldown` - Cooldown between WoL requests (default: `10s`)
-- `-title` - Page title displayed in web UI (default: `WoL Service`)
+- `-cooldown` - Cooldown between WoL requests (default: `30s`)
+- `-title` - Page title displayed in web UI (default: `Server Power`)
 
 ### Configuration File (TOML)
 
@@ -132,7 +132,7 @@ sudo cp wolweb.service /etc/systemd/system/
 2. Edit the service file to configure your settings:
 
 ```bash
-sudo systemctl edit wolweb
+sudo systemctl edit --full wolweb
 ```
 
 3. Enable and start the service:
@@ -156,7 +156,9 @@ See [wolweb.service](wolweb.service) for a complete example configuration.
 ## Build and Installation with Makefile
 
 ```bash
-make build          # Compile and install to /usr/local/bin
+make build          # Compile ./wolweb
+make test           # Run tests with the race detector
+make install-bin    # Install the binary to /usr/local/bin
 make clean          # Remove built binaries
 make install        # Install systemd service file
 make uninstall      # Remove systemd service file
@@ -178,13 +180,13 @@ This project uses GitHub Actions for continuous integration:
 
 ```bash
 # Linux ARM (Raspberry Pi)
-GOOS=linux GOARCH=arm GOARM=7 go build -o wolweb-rpi wolweb.go
+GOOS=linux GOARCH=arm GOARM=7 go build -o wolweb-rpi .
 
 # Linux ARM64
-GOOS=linux GOARCH=arm64 go build -o wolweb-arm64 wolweb.go
+GOOS=linux GOARCH=arm64 go build -o wolweb-arm64 .
 
 # Linux x86-64
-GOOS=linux GOARCH=amd64 go build -o wolweb-amd64 wolweb.go
+GOOS=linux GOARCH=amd64 go build -o wolweb-amd64 .
 ```
 
 ## Security Considerations
@@ -192,6 +194,9 @@ GOOS=linux GOARCH=amd64 go build -o wolweb-amd64 wolweb.go
 - **VPN Access Only** - Run behind a VPN or private network only
 - **Firewall Rules** - Restrict HTTP access to trusted sources
 - **No Authentication** - This service has no built-in authentication; rely on network security
+- **CSRF** - `POST /wake` rejects cross-site browser requests (`Sec-Fetch-Site`), but this is not a substitute for network access control
+- **Trusted config** - Link URLs from the config file are rendered as-is (any scheme except `javascript:`, `data:`, `vbscript:`); keep the config file writable only by trusted users
+- **Unknown config keys** - Typos in the TOML file are rejected at startup
 - **HTTPS** - Consider using a reverse proxy (nginx) with SSL/TLS for production
 
 ## License
