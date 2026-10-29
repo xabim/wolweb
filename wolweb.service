@@ -15,8 +15,7 @@ ExecStart=/usr/local/bin/wolweb \
     -cooldown "10s" \
     -title "Home Server WoL"
 
-User=nobody
-Group=nogroup
+DynamicUser=true
 Restart=on-failure
 RestartSec=10
 
@@ -25,7 +24,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/dev/null
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
 
 # Logging
 StandardOutput=journal
