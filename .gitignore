@@ -1,6 +1,7 @@
 # Binaries
 wolweb
 wolweb.exe
+wolweb.toml
 build/
 dist/
 
