@@ -12,6 +12,14 @@ A lightweight, minimal web service for remotely waking up computers on your home
 - Monitor the online status of target devices
 - Manage WoL requests with cooldown protection
 
+## Screenshots
+
+| Server off | Server on |
+| --- | --- |
+| ![Server off](docs/screenshot-off.png) | ![Server on](docs/screenshot-on.png) |
+
+After a packet is sent, the button is disabled and a notice is shown until the configured `cooldown` has passed.
+
 ## Use Case
 
 Deployed on a Raspberry Pi or similar device within your home network, `wolweb` allows you to:
@@ -24,7 +32,7 @@ Deployed on a Raspberry Pi or similar device within your home network, `wolweb` 
 
 - **Minimal Web UI** - Simple HTML interface for sending WoL packets
 - **Status Monitoring** - Continuous checks for device online status
-- **Cooldown Protection** - Prevents WoL packet spam
+- **Cooldown Protection** - Prevents WoL packet spam; the UI shows a notice and disables the button meanwhile
 - **Quick Links** - Show service links when server is online
 - **Easy Deployment** - Single binary, runs as systemd service
 - **Configurable** - TOML config file or command-line flags
