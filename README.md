@@ -1,6 +1,7 @@
 # wolweb - Minimal Wake-on-LAN Web Service
 
 [![CI](https://github.com/xabim/wolweb/actions/workflows/ci.yml/badge.svg)](https://github.com/xabim/wolweb/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/xabim/wolweb)](https://github.com/xabim/wolweb/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A lightweight, minimal web service for remotely waking up computers on your home network via Wake-on-LAN (WoL). Perfect for Raspberry Pi or similar single-board computers as a systemd service.
