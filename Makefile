@@ -1,4 +1,4 @@
-.PHONY: build clean install uninstall
+.PHONY: build test install-bin install uninstall clean help
 
 BINARY_NAME=wolweb
 BINARY_PATH=/usr/local/bin/$(BINARY_NAME)
@@ -6,46 +6,36 @@ SERVICE_NAME=wolweb.service
 SERVICE_PATH=/etc/systemd/system/$(SERVICE_NAME)
 
 build: $(BINARY_NAME)
-	@echo "✓ Binary built and installed to $(BINARY_PATH)"
 
-$(BINARY_NAME): wolweb.go
-	@echo "Building $(BINARY_NAME)..."
-	go build -o $(BINARY_NAME) wolweb.go
-	@echo "Installing to $(BINARY_PATH)..."
-	sudo cp $(BINARY_NAME) $(BINARY_PATH)
-	@echo "Setting executable permissions..."
-	sudo chmod +x $(BINARY_PATH)
+$(BINARY_NAME): wolweb.go template.html go.mod go.sum
+	go build -trimpath -o $(BINARY_NAME) .
 
-clean:
-	@echo "Cleaning up..."
-	rm -f $(BINARY_NAME)
-	@echo "✓ Clean complete"
+test:
+	go test -race ./...
+
+install-bin: build
+	sudo install -m 0755 $(BINARY_NAME) $(BINARY_PATH)
 
 install:
-	@echo "Installing systemd service..."
-	@if [ -f "$(SERVICE_NAME)" ]; then \
-		sudo cp $(SERVICE_NAME) $(SERVICE_PATH); \
-		sudo systemctl daemon-reload; \
-		echo "✓ Service installed at $(SERVICE_PATH)"; \
-	else \
-		echo "✗ $(SERVICE_NAME) not found"; \
-		exit 1; \
-	fi
+	@test -f "$(SERVICE_NAME)" || { echo "$(SERVICE_NAME) not found"; exit 1; }
+	sudo install -m 0644 $(SERVICE_NAME) $(SERVICE_PATH)
+	sudo systemctl daemon-reload
+	@echo "Service installed at $(SERVICE_PATH)"
 
 uninstall:
-	@echo "Removing systemd service..."
-	@if systemctl is-enabled $(BINARY_NAME) >/dev/null 2>&1; then \
-		sudo systemctl stop $(BINARY_NAME); \
-		sudo systemctl disable $(BINARY_NAME); \
-	fi
+	-sudo systemctl disable --now $(BINARY_NAME)
 	sudo rm -f $(SERVICE_PATH)
 	sudo systemctl daemon-reload
-	@echo "✓ Service uninstalled"
+	@echo "Service uninstalled"
+
+clean:
+	rm -f $(BINARY_NAME)
 
 help:
 	@echo "Available targets:"
-	@echo "  make build       - Compile and install binary to /usr/local/bin"
-	@echo "  make clean       - Remove built binaries"
-	@echo "  make install     - Install systemd service"
-	@echo "  make uninstall   - Remove systemd service"
-	@echo "  make help        - Show this help message"
+	@echo "  make build        - Compile ./wolweb"
+	@echo "  make test         - Run tests with the race detector"
+	@echo "  make install-bin  - Build and install binary to $(BINARY_PATH)"
+	@echo "  make install      - Install systemd service file"
+	@echo "  make uninstall    - Stop and remove the systemd service"
+	@echo "  make clean        - Remove built binary"
