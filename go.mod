@@ -1,4 +1,4 @@
-module github.com/yourusername/wolweb
+module github.com/xabim/wolweb
 
 go 1.26
 
