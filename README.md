@@ -71,10 +71,10 @@ wolweb [flags]
 
 ### Configuration File (TOML)
 
-You can use a TOML configuration file for easier management:
+Pass the file with `-config`; a missing file is an error, as is running with neither `-config` nor any flags. Flags set on the command line override values from the file. The systemd unit uses `-config /etc/wolweb/config.toml`, and `make install-config` installs [wolweb.toml.example](wolweb.toml.example) there without overwriting an existing file.
 
 ```bash
-wolweb -config /etc/wolweb/config.toml
+wolweb -config /path/to/config.toml
 ```
 
 Example configuration file:
@@ -123,16 +123,16 @@ wolweb -config wolweb.toml
 
 ## Systemd Service Setup
 
-1. Create the service file:
+1. Install the config and service file:
 
 ```bash
-sudo cp wolweb.service /etc/systemd/system/
+make install
 ```
 
-2. Edit the service file to configure your settings:
+2. Edit your settings (the unit passes `-config /etc/wolweb/config.toml`; no need to touch the unit):
 
 ```bash
-sudo systemctl edit --full wolweb
+sudo $EDITOR /etc/wolweb/config.toml
 ```
 
 3. Enable and start the service:
@@ -160,7 +160,8 @@ make build          # Compile ./wolweb
 make test           # Run tests with the race detector
 make install-bin    # Install the binary to /usr/local/bin
 make clean          # Remove built binaries
-make install        # Install systemd service file
+make install-config # Install example config to /etc/wolweb (never overwrites)
+make install        # Install config and systemd service file
 make uninstall      # Remove systemd service file
 ```
 

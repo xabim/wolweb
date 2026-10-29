@@ -317,6 +317,10 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 		return config{}, err
 	}
 
+	if configFile == "" && fs.NFlag() == 0 {
+		return config{}, errors.New("no configuration: pass -config <file> and/or flags (see -h)")
+	}
+
 	if configFile != "" {
 		explicit := map[string]bool{}
 		fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })

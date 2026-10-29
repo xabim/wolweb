@@ -5,15 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/wolweb \
-    -listen ":8080" \
-    -mac "AA:BB:CC:DD:EE:FF" \
-    -checkAddr "192.168.1.100:22" \
-    -checkTimeout "3s" \
-    -checkEvery "30s" \
-    -broadcast "255.255.255.255:9" \
-    -cooldown "10s" \
-    -title "Home Server WoL"
+ExecStart=/usr/local/bin/wolweb -config /etc/wolweb/config.toml
 
 DynamicUser=true
 Restart=on-failure

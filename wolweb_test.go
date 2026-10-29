@@ -200,3 +200,9 @@ func TestTCPCheck(t *testing.T) {
 		t.Error("expected offline with error")
 	}
 }
+
+func TestParseConfigRequiresConfigOrFlags(t *testing.T) {
+	if _, err := parseConfig(nil, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "no configuration") {
+		t.Fatalf("expected no-configuration error, got %v", err)
+	}
+}
