@@ -12,7 +12,8 @@
     .row { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
     .title { font-size: 20px; font-weight: 700; letter-spacing: 0.2px; }
     .pill { display:inline-flex; align-items:center; gap:10px; padding: 10px 12px; border-radius:999px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.10); }
-    .dot { width: 10px; height: 10px; border-radius: 999px; background: {{.Badge}}; box-shadow: 0 0 0 6px rgba(255,255,255,0.02); }
+    .dot { width: 10px; height: 10px; border-radius: 999px; background:#dc2626; box-shadow: 0 0 0 6px rgba(255,255,255,0.02); }
+    .dot.on { background:#16a34a; }
     .status { font-weight:700; }
     .muted { color:#9ca3af; font-size: 13px; }
     .btn { appearance:none; border:0; border-radius: 12px; padding: 12px 14px; font-weight: 700; cursor:pointer; }
@@ -39,7 +40,7 @@
           <div class="muted">{{.SubStatus}} — updated: {{.LastCheckStr}}</div>
         </div>
         <div class="pill">
-          <span class="dot"></span>
+          <span class="dot{{if .Online}} on{{end}}"></span>
           <span class="status">{{.Status}}</span>
         </div>
       </div>
@@ -60,11 +61,10 @@
       </div>
 
       <form method="POST" action="/wake" style="margin-top:14px">
-        <button class="btn btn-wake" type="submit" {{.DisabledAttr}}>Wake On LAN</button>
+        <button class="btn btn-wake" type="submit"{{if .Online}} disabled{{end}}>Wake On LAN</button>
       </form>
 
-      {{if .Links}}
-      {{if eq .Status "ON"}}
+      {{if and .Online .Links}}
       <div class="links-section">
         <div class="links-title">Available Services</div>
         <div class="links-grid">
@@ -76,7 +76,6 @@
           {{end}}
         </div>
       </div>
-      {{end}}
       {{end}}
 
       <div class="foot">Local time: {{.Now}}</div>

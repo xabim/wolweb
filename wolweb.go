@@ -3,14 +3,20 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"flag"
 	"fmt"
+	"html/template"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/signal"
+	"strings"
 	"sync"
-	"text/template"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -18,6 +24,12 @@ import (
 
 //go:embed template.html
 var templateFS embed.FS
+
+const timeFormat = "2006-01-02 15:04:05"
+
+// postWOLCheckDelay is how long to wait after sending a magic packet before
+// re-checking status, so the UI flips faster than the periodic check.
+const postWOLCheckDelay = 8 * time.Second
 
 type config struct {
 	listenAddr   string
@@ -39,16 +51,24 @@ type link struct {
 	Icon string `toml:"icon"`
 }
 
+// linkView is a link whose URL has been validated and may be emitted as-is
+// (including non-http schemes such as ssh://).
+type linkView struct {
+	Name string
+	URL  template.URL
+	Icon string
+}
+
 type tomlConfig struct {
 	Server struct {
-		Mac         string        `toml:"mac"`
-		CheckAddr   string        `toml:"checkAddr"`
-		CheckTimeout string       `toml:"checkTimeout"`
-		CheckEvery  string        `toml:"checkEvery"`
-		Broadcast   string        `toml:"broadcast"`
-		Cooldown    string        `toml:"cooldown"`
-		Title       string        `toml:"title"`
-		Listen      string        `toml:"listen"`
+		Mac          string `toml:"mac"`
+		CheckAddr    string `toml:"checkAddr"`
+		CheckTimeout string `toml:"checkTimeout"`
+		CheckEvery   string `toml:"checkEvery"`
+		Broadcast    string `toml:"broadcast"`
+		Cooldown     string `toml:"cooldown"`
+		Title        string `toml:"title"`
+		Listen       string `toml:"listen"`
 	} `toml:"server"`
 	Links []link `toml:"links"`
 }
@@ -65,191 +85,344 @@ type pageData struct {
 	Title        string
 	SubStatus    string
 	Status       string
-	Badge        string
+	Online       bool
 	CheckAddr    string
 	LastCheckStr string
 	LastWOLStr   string
 	LastError    string
-	DisabledAttr string
 	Now          string
-	Links        []link
+	Links        []linkView
+}
+
+type server struct {
+	cfg   config
+	st    *state
+	tmpl  *template.Template
+	links []linkView
 }
 
 func main() {
-	cfg := parseFlags()
-
-	st := &state{}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// First check immediately, then periodic.
-	doCheck := func() {
-		ok, err := tcpCheck(cfg.checkAddr, cfg.checkTimeout)
-		st.mu.Lock()
-		st.online = ok
-		st.lastCheck = time.Now()
-		if err != nil {
-			st.lastError = err.Error()
-		} else {
-			st.lastError = ""
+	cfg, err := parseConfig(os.Args[1:], os.Stderr)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
 		}
-		st.mu.Unlock()
+		log.Fatalf("error: %v", err)
 	}
-	doCheck()
 
+	srv, err := newServer(cfg)
+	if err != nil {
+		log.Fatalf("error: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, srv); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(ctx context.Context, s *server) error {
+	// First check immediately, then periodic.
+	s.refresh()
 	go func() {
-		t := time.NewTicker(cfg.checkEvery)
+		t := time.NewTicker(s.cfg.checkEvery)
 		defer t.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				doCheck()
+				s.refresh()
 			}
 		}
 	}()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		renderHome(w, cfg, st)
-	})
-	mux.HandleFunc("/wake", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		// If already online, no need to send WOL.
-		st.mu.RLock()
-		online := st.online
-		lastWOL := st.lastWOL
-		st.mu.RUnlock()
-		if online {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
-
-		// Cooldown to avoid spamming WOL.
-		if time.Since(lastWOL) < cfg.wolCooldown {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
-
-		if err := sendWOL(cfg.macAddr, cfg.broadcast); err != nil {
-			http.Error(w, "wol failed: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		st.mu.Lock()
-		st.lastWOL = time.Now()
-		st.mu.Unlock()
-
-		// Optional: trigger an immediate re-check shortly after sending WOL
-		// so the UI flips faster than 5 minutes.
-		go func() {
-			time.Sleep(8 * time.Second)
-			ok, err := tcpCheck(cfg.checkAddr, cfg.checkTimeout)
-			st.mu.Lock()
-			st.online = ok
-			st.lastCheck = time.Now()
-			if err != nil {
-				st.lastError = err.Error()
-			} else {
-				st.lastError = ""
-			}
-			st.mu.Unlock()
-		}()
-
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
-
-	srv := &http.Server{
-		Addr:              cfg.listenAddr,
-		Handler:           mux,
+	httpSrv := &http.Server{
+		Addr:              s.cfg.listenAddr,
+		Handler:           s.routes(ctx),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("wolweb: listening on %s (check=%s every=%s)\n", cfg.listenAddr, cfg.checkAddr, cfg.checkEvery)
-	log.Fatal(srv.ListenAndServe())
+	errCh := make(chan error, 1)
+	go func() { errCh <- httpSrv.ListenAndServe() }()
+	log.Printf("wolweb: listening on %s (check=%s every=%s)", s.cfg.listenAddr, s.cfg.checkAddr, s.cfg.checkEvery)
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return httpSrv.Shutdown(shutdownCtx)
+	}
 }
 
-func parseFlags() config {
+func newServer(cfg config) (*server, error) {
+	tmpl, err := template.ParseFS(templateFS, "template.html")
+	if err != nil {
+		return nil, fmt.Errorf("parsing template: %w", err)
+	}
+
+	links := make([]linkView, len(cfg.links))
+	for i, l := range cfg.links {
+		// Links come from the operator's config file, which is trusted, so
+		// they may use any scheme (e.g. ssh://). Validated in parseConfig.
+		links[i] = linkView{Name: l.Name, URL: template.URL(l.URL), Icon: l.Icon} //nolint:gosec
+	}
+
+	return &server{cfg: cfg, st: &state{}, tmpl: tmpl, links: links}, nil
+}
+
+func (s *server) routes(ctx context.Context) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/{$}", s.handleHome)
+	mux.HandleFunc("/wake", func(w http.ResponseWriter, r *http.Request) {
+		s.handleWake(ctx, w, r)
+	})
+	return mux
+}
+
+// refresh runs a TCP check and records the result.
+func (s *server) refresh() {
+	ok, err := tcpCheck(s.cfg.checkAddr, s.cfg.checkTimeout)
+	s.st.mu.Lock()
+	defer s.st.mu.Unlock()
+	s.st.online = ok
+	s.st.lastCheck = time.Now()
+	s.st.lastError = ""
+	if err != nil {
+		s.st.lastError = s.st.lastCheck.Format(timeFormat) + " " + err.Error()
+	}
+}
+
+func (s *server) handleWake(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Reject cross-site form posts (CSRF). Browsers always send
+	// Sec-Fetch-Site; non-browser clients (curl) omit it and are allowed.
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+		http.Error(w, "cross-site request rejected", http.StatusForbidden)
+		return
+	}
+
+	// Check online status and cooldown, and reserve the slot, under a single
+	// lock so concurrent requests cannot both send a packet.
+	s.st.mu.Lock()
+	if s.st.online || time.Since(s.st.lastWOL) < s.cfg.wolCooldown {
+		s.st.mu.Unlock()
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	prev := s.st.lastWOL
+	s.st.lastWOL = time.Now()
+	s.st.mu.Unlock()
+
+	if err := sendWOL(s.cfg.macAddr, s.cfg.broadcast); err != nil {
+		s.st.mu.Lock()
+		s.st.lastWOL = prev
+		s.st.mu.Unlock()
+		log.Printf("wol failed: %v", err)
+		http.Error(w, "failed to send wake-on-lan packet", http.StatusInternalServerError)
+		return
+	}
+
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-time.After(postWOLCheckDelay):
+			s.refresh()
+		}
+	}()
+
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *server) handleHome(w http.ResponseWriter, _ *http.Request) {
+	s.st.mu.RLock()
+	online := s.st.online
+	lastCheck := s.st.lastCheck
+	lastError := s.st.lastError
+	lastWOL := s.st.lastWOL
+	s.st.mu.RUnlock()
+
+	data := pageData{
+		Title:        s.cfg.title,
+		SubStatus:    "Offline",
+		Status:       "OFF",
+		Online:       online,
+		CheckAddr:    s.cfg.checkAddr,
+		LastCheckStr: formatTime(lastCheck),
+		LastWOLStr:   formatTime(lastWOL),
+		LastError:    emptyIf(lastError, "-"),
+		Now:          time.Now().Format(timeFormat),
+		Links:        s.links,
+	}
+	if online {
+		data.SubStatus = "Online"
+		data.Status = "ON"
+	}
+
+	// Render to a buffer so a template failure yields a clean 500 instead of
+	// a half-written page.
+	var buf strings.Builder
+	if err := s.tmpl.Execute(&buf, data); err != nil {
+		log.Printf("template render error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	_, _ = io.WriteString(w, buf.String())
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return t.Format(timeFormat)
+}
+
+// parseConfig builds the configuration with precedence
+// defaults < TOML file < explicitly set command-line flags.
+func parseConfig(args []string, output io.Writer) (config, error) {
 	var cfg config
 	var configFile string
 
-	flag.StringVar(&configFile, "config", "", "path to TOML config file")
-	flag.StringVar(&cfg.listenAddr, "listen", ":8080", "listen address, e.g. :80 or 0.0.0.0:8080")
-	flag.StringVar(&cfg.checkAddr, "checkAddr", "192.168.1.101:22", "TCP address to check, e.g. 192.168.1.101:22")
-	flag.DurationVar(&cfg.checkTimeout, "checkTimeout", 1*time.Second, "TCP check timeout")
-	flag.DurationVar(&cfg.checkEvery, "checkEvery", 5*time.Minute, "how often to refresh status in background")
+	fs := flag.NewFlagSet("wolweb", flag.ContinueOnError)
+	fs.SetOutput(output)
+	fs.StringVar(&configFile, "config", "", "path to TOML config file")
+	fs.StringVar(&cfg.listenAddr, "listen", ":8080", "listen address, e.g. :80 or 0.0.0.0:8080")
+	fs.StringVar(&cfg.checkAddr, "checkAddr", "", "TCP address to check, e.g. 192.168.1.101:22 (required)")
+	fs.DurationVar(&cfg.checkTimeout, "checkTimeout", 1*time.Second, "TCP check timeout")
+	fs.DurationVar(&cfg.checkEvery, "checkEvery", 5*time.Minute, "how often to refresh status in background")
+	fs.StringVar(&cfg.macAddr, "mac", "", "target MAC address (required)")
+	fs.StringVar(&cfg.broadcast, "broadcast", "255.255.255.255:9", "broadcast UDP address, e.g. 192.168.1.255:9")
+	fs.DurationVar(&cfg.wolCooldown, "cooldown", 30*time.Second, "minimum time between WoL sends")
+	fs.StringVar(&cfg.title, "title", "Server Power", "UI page title")
 
-	flag.StringVar(&cfg.macAddr, "mac", "34:5a:60:d4:31:34", "target MAC address")
-	flag.StringVar(&cfg.broadcast, "broadcast", "192.168.1.255:9", "broadcast UDP address, e.g. 192.168.1.255:9")
-	flag.DurationVar(&cfg.wolCooldown, "cooldown", 30*time.Second, "minimum time between WoL sends")
+	if err := fs.Parse(args); err != nil {
+		return config{}, err
+	}
 
-	flag.StringVar(&cfg.title, "title", "Server Power", "UI page title")
-
-	flag.Parse()
-
-	// If config file is provided, load it
 	if configFile != "" {
+		explicit := map[string]bool{}
+		fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+
 		data, err := os.ReadFile(configFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error reading config file: %v\n", err)
-			os.Exit(1)
+			return config{}, fmt.Errorf("reading config file: %w", err)
 		}
-
-		var tomlCfg tomlConfig
-		if err := toml.Unmarshal(data, &tomlCfg); err != nil {
-			fmt.Fprintf(os.Stderr, "error parsing config file: %v\n", err)
-			os.Exit(1)
+		var tc tomlConfig
+		md, err := toml.Decode(string(data), &tc)
+		if err != nil {
+			return config{}, fmt.Errorf("parsing config file: %w", err)
 		}
-
-		// Load from TOML, CLI flags override TOML values
-		if tomlCfg.Server.Listen != "" {
-			cfg.listenAddr = tomlCfg.Server.Listen
+		if u := md.Undecoded(); len(u) > 0 {
+			return config{}, fmt.Errorf("config file: unknown keys: %v", u)
 		}
-		if tomlCfg.Server.Mac != "" {
-			cfg.macAddr = tomlCfg.Server.Mac
+		if err := applyTOML(&cfg, tc, explicit); err != nil {
+			return config{}, err
 		}
-		if tomlCfg.Server.CheckAddr != "" {
-			cfg.checkAddr = tomlCfg.Server.CheckAddr
-		}
-		if tomlCfg.Server.CheckTimeout != "" {
-			d, err := time.ParseDuration(tomlCfg.Server.CheckTimeout)
-			if err == nil {
-				cfg.checkTimeout = d
-			}
-		}
-		if tomlCfg.Server.CheckEvery != "" {
-			d, err := time.ParseDuration(tomlCfg.Server.CheckEvery)
-			if err == nil {
-				cfg.checkEvery = d
-			}
-		}
-		if tomlCfg.Server.Broadcast != "" {
-			cfg.broadcast = tomlCfg.Server.Broadcast
-		}
-		if tomlCfg.Server.Cooldown != "" {
-			d, err := time.ParseDuration(tomlCfg.Server.Cooldown)
-			if err == nil {
-				cfg.wolCooldown = d
-			}
-		}
-		if tomlCfg.Server.Title != "" {
-			cfg.title = tomlCfg.Server.Title
-		}
-		cfg.links = tomlCfg.Links
 	}
 
-	// Validation
-	if cfg.listenAddr == "" || cfg.checkAddr == "" || cfg.macAddr == "" || cfg.broadcast == "" {
-		fmt.Fprintln(os.Stderr, "error: missing required flags")
-		os.Exit(2)
+	if err := cfg.validate(); err != nil {
+		return config{}, err
+	}
+	return cfg, nil
+}
+
+// applyTOML overlays TOML values onto cfg, skipping anything set by an
+// explicit command-line flag.
+func applyTOML(cfg *config, tc tomlConfig, explicit map[string]bool) error {
+	str := func(flagName, v string, dst *string) {
+		if v != "" && !explicit[flagName] {
+			*dst = v
+		}
+	}
+	dur := func(flagName, v string, dst *time.Duration) error {
+		if v == "" || explicit[flagName] {
+			return nil
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("config file: invalid %s %q: %w", flagName, v, err)
+		}
+		*dst = d
+		return nil
 	}
 
-	return cfg
+	s := tc.Server
+	str("listen", s.Listen, &cfg.listenAddr)
+	str("mac", s.Mac, &cfg.macAddr)
+	str("checkAddr", s.CheckAddr, &cfg.checkAddr)
+	str("broadcast", s.Broadcast, &cfg.broadcast)
+	str("title", s.Title, &cfg.title)
+	for _, d := range []struct {
+		name string
+		v    string
+		dst  *time.Duration
+	}{
+		{"checkTimeout", s.CheckTimeout, &cfg.checkTimeout},
+		{"checkEvery", s.CheckEvery, &cfg.checkEvery},
+		{"cooldown", s.Cooldown, &cfg.wolCooldown},
+	} {
+		if err := dur(d.name, d.v, d.dst); err != nil {
+			return err
+		}
+	}
+	cfg.links = tc.Links
+	return nil
+}
+
+func (c config) validate() error {
+	if c.macAddr == "" {
+		return errors.New("mac is required")
+	}
+	if _, err := net.ParseMAC(c.macAddr); err != nil {
+		return fmt.Errorf("invalid mac %q: %w", c.macAddr, err)
+	}
+	if c.checkAddr == "" {
+		return errors.New("checkAddr is required")
+	}
+	if _, _, err := net.SplitHostPort(c.checkAddr); err != nil {
+		return fmt.Errorf("invalid checkAddr %q: %w", c.checkAddr, err)
+	}
+	if _, _, err := net.SplitHostPort(c.broadcast); err != nil {
+		return fmt.Errorf("invalid broadcast %q: %w", c.broadcast, err)
+	}
+	if c.listenAddr == "" {
+		return errors.New("listen must not be empty")
+	}
+	if c.checkTimeout <= 0 || c.checkEvery <= 0 {
+		return errors.New("checkTimeout and checkEvery must be positive")
+	}
+	if c.wolCooldown < 0 {
+		return errors.New("cooldown must not be negative")
+	}
+	for _, l := range c.links {
+		u, err := url.Parse(l.URL)
+		if err != nil || u.Scheme == "" {
+			return fmt.Errorf("link %q: invalid url %q (a scheme such as https:// is required)", l.Name, l.URL)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "javascript", "data", "vbscript":
+			return fmt.Errorf("link %q: url scheme %q is not allowed", l.Name, u.Scheme)
+		}
+	}
+	return nil
 }
 
 func tcpCheck(addr string, timeout time.Duration) (bool, error) {
@@ -261,19 +434,22 @@ func tcpCheck(addr string, timeout time.Duration) (bool, error) {
 	return true, nil
 }
 
-func sendWOL(macStr, bcast string) error {
-	mac, err := net.ParseMAC(macStr)
-	if err != nil {
-		return err
-	}
-
-	// magic packet
+// buildMagicPacket returns 6 bytes of 0xff followed by the MAC repeated 16 times.
+func buildMagicPacket(mac net.HardwareAddr) []byte {
 	packet := make([]byte, 6+16*len(mac))
 	for i := 0; i < 6; i++ {
 		packet[i] = 0xff
 	}
 	for i := 6; i < len(packet); i += len(mac) {
 		copy(packet[i:], mac)
+	}
+	return packet
+}
+
+func sendWOL(macStr, bcast string) error {
+	mac, err := net.ParseMAC(macStr)
+	if err != nil {
+		return err
 	}
 
 	addr, err := net.ResolveUDPAddr("udp", bcast)
@@ -287,66 +463,8 @@ func sendWOL(macStr, bcast string) error {
 	}
 	defer conn.Close()
 
-	_, err = conn.Write(packet)
+	_, err = conn.Write(buildMagicPacket(mac))
 	return err
-}
-
-func renderHome(w http.ResponseWriter, cfg config, st *state) {
-	st.mu.RLock()
-	online := st.online
-	lastCheck := st.lastCheck
-	lastError := st.lastError
-	lastWOL := st.lastWOL
-	st.mu.RUnlock()
-
-	status := "OFF"
-	badge := "#dc2626" // red
-	sub := "Offline"
-	if online {
-		status = "ON"
-		badge = "#16a34a" // green
-		sub = "Online"
-	}
-
-	now := time.Now()
-	lastCheckStr := "never"
-	if !lastCheck.IsZero() {
-		lastCheckStr = lastCheck.Format("2006-01-02 15:04:05")
-	}
-	lastWOLStr := "never"
-	if !lastWOL.IsZero() {
-		lastWOLStr = lastWOL.Format("2006-01-02 15:04:05")
-	}
-
-	disabledAttr := ""
-	if online {
-		disabledAttr = "disabled"
-	}
-
-	data := pageData{
-		Title:        cfg.title,
-		SubStatus:    sub,
-		Status:       status,
-		Badge:        badge,
-		CheckAddr:    cfg.checkAddr,
-		LastCheckStr: lastCheckStr,
-		LastWOLStr:   lastWOLStr,
-		LastError:    emptyIf(lastError, "-"),
-		DisabledAttr: disabledAttr,
-		Now:          now.Format("2006-01-02 15:04:05"),
-		Links:        cfg.links,
-	}
-
-	tmpl, err := template.ParseFS(templateFS, "template.html")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("template error: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, data); err != nil {
-		log.Printf("template render error: %v", err)
-	}
 }
 
 func emptyIf(s, fallback string) string {
