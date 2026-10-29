@@ -119,9 +119,9 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if err := run(ctx, srv); err != nil {
+	err = run(ctx, srv)
+	stop()
+	if err != nil {
 		log.Fatal(err)
 	}
 }
@@ -481,9 +481,11 @@ func sendWOL(macStr, bcast string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
 
 	_, err = conn.Write(buildMagicPacket(mac))
+	if cerr := conn.Close(); err == nil {
+		err = cerr
+	}
 	return err
 }
 
