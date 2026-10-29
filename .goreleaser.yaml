@@ -1,0 +1,67 @@
+version: 2
+
+project_name: wolweb
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - main: .
+    binary: wolweb
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm
+      - arm64
+    goarm:
+      - "6"
+      - "7"
+    ignore:
+      - goos: darwin
+        goarch: arm
+      - goos: windows
+        goarch: arm
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if eq .Arch "arm" }}v{{ .Arm }}{{ end }}
+    files:
+      - LICENSE
+      - README.md
+      - wolweb.service
+      - wolweb.toml.example
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: Other
+      order: 2
+  filters:
+    exclude:
+      - '^docs(\(.+\))?:'
+      - '^chore(\(.+\))?:'
+      - '^test(\(.+\))?:'
+      - '^ci(\(.+\))?:'

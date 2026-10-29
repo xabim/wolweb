@@ -39,12 +39,24 @@ Deployed on a Raspberry Pi or similar device within your home network, `wolweb` 
 
 ## Installation
 
-### Prerequisites
+### From a release (recommended)
 
-- Go 1.26+ (for building)
-- Linux system with systemd
+Download the archive for your platform from the [Releases page](https://github.com/xabim/wolweb/releases). For a Raspberry Pi use `linux_arm64` (64-bit OS), `linux_armv7` (32-bit Pi 2/3/4) or `linux_armv6` (Pi Zero/1).
 
-### Build from Source
+```bash
+tar xzf wolweb_<version>_linux_arm64.tar.gz
+sudo install -m 0755 wolweb /usr/local/bin/
+sudo install -d /etc/wolweb
+sudo install -m 0644 wolweb.toml.example /etc/wolweb/config.toml   # then edit it
+sudo install -m 0644 wolweb.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now wolweb
+```
+
+Verify downloads against `checksums.txt` from the same release.
+
+### Build from source
+
+Requires Go (see `go.mod`) and a Linux system with systemd.
 
 ```bash
 make build
@@ -207,6 +219,17 @@ GOOS=linux GOARCH=amd64 go build -o wolweb-amd64 .
 - **Trusted config** - Link URLs from the config file are rendered as-is (any scheme except `javascript:`, `data:`, `vbscript:`); keep the config file writable only by trusted users
 - **Unknown config keys** - Typos in the TOML file are rejected at startup
 - **HTTPS** - Consider using a reverse proxy (nginx) with SSL/TLS for production
+
+## Releasing
+
+Releases are built by [GoReleaser](https://goreleaser.com) via GitHub Actions. Push a version tag and the workflow runs the tests, builds binaries for Linux (amd64, arm64, armv7, armv6), macOS and Windows, and publishes a GitHub Release with checksums and a changelog generated from conventional commits:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+To try a build locally without publishing: `goreleaser release --snapshot --clean`.
 
 ## License
 
