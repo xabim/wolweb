@@ -223,15 +223,16 @@ GOOS=linux GOARCH=amd64 go build -o wolweb-amd64 .
 
 ## Releasing
 
-Releases are built by [GoReleaser](https://goreleaser.com) via GitHub Actions. Push a version tag and the workflow runs the tests, builds binaries for Linux (amd64, arm64, armv7, armv6), macOS and Windows, and publishes a GitHub Release with checksums and a changelog generated from conventional commits:
+Releases are built by [GoReleaser](https://goreleaser.com) via GitHub Actions. The workflow runs the tests, builds binaries for Linux (amd64, arm64, armv7, armv6), macOS and Windows, and publishes a GitHub Release with checksums and a changelog generated from conventional commits.
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+To release, go to **Actions → Release → Run workflow** on `main` and enter the version (e.g. `v1.1.0`); the workflow creates the tag for you. Only people with write access to the repository can run it. Pushing a `v*.*.*` tag by hand also works.
 
 To try a build locally without publishing: `goreleaser release --snapshot --clean`.
 
+## Contributing
+
+Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-MIT
+Released under the [MIT License](LICENSE). Copyright (c) 2026 Javier Marti.
