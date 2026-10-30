@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,16 +34,23 @@ const postWOLCheckDelay = 8 * time.Second
 
 type config struct {
 	listenAddr   string
-	checkAddr    string
 	checkTimeout time.Duration
 	checkEvery   time.Duration
 
-	macAddr     string
-	broadcast   string
+	broadcast   string // default for servers that do not set their own
 	wolCooldown time.Duration
 
-	title string
-	links []link
+	title   string
+	servers []serverCfg
+}
+
+// serverCfg describes one machine that can be woken.
+type serverCfg struct {
+	Name      string `toml:"name"`
+	MAC       string `toml:"mac"`
+	CheckAddr string `toml:"checkAddr"`
+	Broadcast string `toml:"broadcast"`
+	Links     []link `toml:"links"`
 }
 
 type link struct {
@@ -70,7 +78,8 @@ type tomlConfig struct {
 		Title        string `toml:"title"`
 		Listen       string `toml:"listen"`
 	} `toml:"server"`
-	Links []link `toml:"links"`
+	Links   []link      `toml:"links"`
+	Servers []serverCfg `toml:"servers"`
 }
 
 type state struct {
@@ -82,7 +91,16 @@ type state struct {
 }
 
 type pageData struct {
-	Title        string
+	Title       string
+	Multi       bool
+	Now         string
+	RefreshSecs int
+	Servers     []serverView
+}
+
+type serverView struct {
+	ID           int
+	Name         string
 	SubStatus    string
 	Status       string
 	Online       bool
@@ -90,18 +108,22 @@ type pageData struct {
 	LastCheckStr string
 	LastWOLStr   string
 	LastError    string
-	Now          string
 	CoolingDown  bool
 	CooldownMsg  string
-	RefreshSecs  int
 	Links        []linkView
 }
 
-type server struct {
-	cfg   config
+// target is a configured server together with its runtime state.
+type target struct {
+	cfg   serverCfg
 	st    *state
-	tmpl  *template.Template
 	links []linkView
+}
+
+type server struct {
+	cfg     config
+	tmpl    *template.Template
+	targets []*target
 }
 
 func main() {
@@ -128,7 +150,7 @@ func main() {
 
 func run(ctx context.Context, s *server) error {
 	// First check immediately, then periodic.
-	s.refresh()
+	s.refreshAll()
 	go func() {
 		t := time.NewTicker(s.cfg.checkEvery)
 		defer t.Stop()
@@ -137,7 +159,7 @@ func run(ctx context.Context, s *server) error {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				s.refresh()
+				s.refreshAll()
 			}
 		}
 	}()
@@ -153,7 +175,7 @@ func run(ctx context.Context, s *server) error {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.ListenAndServe() }()
-	log.Printf("wolweb: listening on %s (check=%s every=%s)", s.cfg.listenAddr, s.cfg.checkAddr, s.cfg.checkEvery)
+	log.Printf("wolweb: listening on %s (%d server(s), check every %s)", s.cfg.listenAddr, len(s.targets), s.cfg.checkEvery)
 
 	select {
 	case err := <-errCh:
@@ -171,14 +193,18 @@ func newServer(cfg config) (*server, error) {
 		return nil, fmt.Errorf("parsing template: %w", err)
 	}
 
-	links := make([]linkView, len(cfg.links))
-	for i, l := range cfg.links {
-		// Links come from the operator's config file, which is trusted, so
-		// they may use any scheme (e.g. ssh://). Validated in parseConfig.
-		links[i] = linkView{Name: l.Name, URL: template.URL(l.URL), Icon: l.Icon} //nolint:gosec
+	targets := make([]*target, len(cfg.servers))
+	for i, sc := range cfg.servers {
+		links := make([]linkView, len(sc.Links))
+		for j, l := range sc.Links {
+			// Links come from the operator's config file, which is trusted, so
+			// they may use any scheme (e.g. ssh://). Validated in parseConfig.
+			links[j] = linkView{Name: l.Name, URL: template.URL(l.URL), Icon: l.Icon} //nolint:gosec
+		}
+		targets[i] = &target{cfg: sc, st: &state{}, links: links}
 	}
 
-	return &server{cfg: cfg, st: &state{}, tmpl: tmpl, links: links}, nil
+	return &server{cfg: cfg, tmpl: tmpl, targets: targets}, nil
 }
 
 func (s *server) routes(ctx context.Context) http.Handler {
@@ -190,17 +216,43 @@ func (s *server) routes(ctx context.Context) http.Handler {
 	return mux
 }
 
-// refresh runs a TCP check and records the result.
-func (s *server) refresh() {
-	ok, err := tcpCheck(s.cfg.checkAddr, s.cfg.checkTimeout)
-	s.st.mu.Lock()
-	defer s.st.mu.Unlock()
-	s.st.online = ok
-	s.st.lastCheck = time.Now()
-	s.st.lastError = ""
-	if err != nil {
-		s.st.lastError = s.st.lastCheck.Format(timeFormat) + " " + err.Error()
+// refreshAll checks every server concurrently.
+func (s *server) refreshAll() {
+	var wg sync.WaitGroup
+	for _, t := range s.targets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.refresh(t)
+		}()
 	}
+	wg.Wait()
+}
+
+// refresh runs a TCP check against t and records the result.
+func (s *server) refresh(t *target) {
+	ok, err := tcpCheck(t.cfg.CheckAddr, s.cfg.checkTimeout)
+	t.st.mu.Lock()
+	defer t.st.mu.Unlock()
+	t.st.online = ok
+	t.st.lastCheck = time.Now()
+	t.st.lastError = ""
+	if err != nil {
+		t.st.lastError = t.st.lastCheck.Format(timeFormat) + " " + err.Error()
+	}
+}
+
+// lookup resolves the "server" form value to a target. It may be omitted
+// when only one server is configured.
+func (s *server) lookup(id string) (*target, bool) {
+	if id == "" && len(s.targets) == 1 {
+		return s.targets[0], true
+	}
+	n, err := strconv.Atoi(id)
+	if err != nil || n < 0 || n >= len(s.targets) {
+		return nil, false
+	}
+	return s.targets[n], true
 }
 
 func (s *server) handleWake(ctx context.Context, w http.ResponseWriter, r *http.Request) {
@@ -217,22 +269,28 @@ func (s *server) handleWake(ctx context.Context, w http.ResponseWriter, r *http.
 		return
 	}
 
+	t, ok := s.lookup(r.FormValue("server"))
+	if !ok {
+		http.Error(w, "unknown server", http.StatusBadRequest)
+		return
+	}
+
 	// Check online status and cooldown, and reserve the slot, under a single
 	// lock so concurrent requests cannot both send a packet.
-	s.st.mu.Lock()
-	if s.st.online || time.Since(s.st.lastWOL) < s.cfg.wolCooldown {
-		s.st.mu.Unlock()
+	t.st.mu.Lock()
+	if t.st.online || time.Since(t.st.lastWOL) < s.cfg.wolCooldown {
+		t.st.mu.Unlock()
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	prev := s.st.lastWOL
-	s.st.lastWOL = time.Now()
-	s.st.mu.Unlock()
+	prev := t.st.lastWOL
+	t.st.lastWOL = time.Now()
+	t.st.mu.Unlock()
 
-	if err := sendWOL(s.cfg.macAddr, s.cfg.broadcast); err != nil {
-		s.st.mu.Lock()
-		s.st.lastWOL = prev
-		s.st.mu.Unlock()
+	if err := sendWOL(t.cfg.MAC, t.cfg.Broadcast); err != nil {
+		t.st.mu.Lock()
+		t.st.lastWOL = prev
+		t.st.mu.Unlock()
 		log.Printf("wol failed: %v", err)
 		http.Error(w, "failed to send wake-on-lan packet", http.StatusInternalServerError)
 		return
@@ -242,7 +300,7 @@ func (s *server) handleWake(ctx context.Context, w http.ResponseWriter, r *http.
 		select {
 		case <-ctx.Done():
 		case <-time.After(postWOLCheckDelay):
-			s.refresh()
+			s.refresh(t)
 		}
 	}()
 
@@ -250,41 +308,21 @@ func (s *server) handleWake(ctx context.Context, w http.ResponseWriter, r *http.
 }
 
 func (s *server) handleHome(w http.ResponseWriter, _ *http.Request) {
-	s.st.mu.RLock()
-	online := s.st.online
-	lastCheck := s.st.lastCheck
-	lastError := s.st.lastError
-	lastWOL := s.st.lastWOL
-	s.st.mu.RUnlock()
-
 	data := pageData{
-		Title:        s.cfg.title,
-		SubStatus:    "Offline",
-		Status:       "OFF",
-		Online:       online,
-		CheckAddr:    s.cfg.checkAddr,
-		LastCheckStr: formatTime(lastCheck),
-		LastWOLStr:   formatTime(lastWOL),
-		LastError:    emptyIf(lastError, "-"),
-		Now:          time.Now().Format(timeFormat),
-		Links:        s.links,
+		Title:       s.cfg.title,
+		Multi:       len(s.targets) > 1,
+		Now:         time.Now().Format(timeFormat),
+		RefreshSecs: 30,
 	}
-	if online {
-		data.SubStatus = "Online"
-		data.Status = "ON"
-	}
-
-	data.RefreshSecs = 30
-	if !lastWOL.IsZero() {
-		if left := s.cfg.wolCooldown - time.Since(lastWOL); left > 0 && !online {
-			data.CoolingDown = true
-			data.CooldownMsg = fmt.Sprintf("Packet sent %s ago, wait %s before sending another",
-				time.Since(lastWOL).Round(time.Second), left.Round(time.Second))
-			// Reload right when the button becomes available again.
-			if secs := int(left.Seconds()) + 1; secs < data.RefreshSecs {
+	for i, t := range s.targets {
+		v := s.view(i, t)
+		// Reload right when a button becomes available again.
+		if v.CoolingDown {
+			if secs := int(v.cooldownLeft.Seconds()) + 1; secs < data.RefreshSecs {
 				data.RefreshSecs = secs
 			}
 		}
+		data.Servers = append(data.Servers, v.serverView)
 	}
 
 	// Render to a buffer so a template failure yields a clean 500 instead of
@@ -304,6 +342,50 @@ func (s *server) handleHome(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, buf.String())
 }
 
+type targetView struct {
+	serverView
+	cooldownLeft time.Duration
+}
+
+func (s *server) view(id int, t *target) targetView {
+	t.st.mu.RLock()
+	online := t.st.online
+	lastCheck := t.st.lastCheck
+	lastError := t.st.lastError
+	lastWOL := t.st.lastWOL
+	t.st.mu.RUnlock()
+
+	name := t.cfg.Name
+	if name == "" {
+		name = s.cfg.title
+	}
+	v := targetView{serverView: serverView{
+		ID:           id,
+		Name:         name,
+		SubStatus:    "Offline",
+		Status:       "OFF",
+		Online:       online,
+		CheckAddr:    t.cfg.CheckAddr,
+		LastCheckStr: formatTime(lastCheck),
+		LastWOLStr:   formatTime(lastWOL),
+		LastError:    emptyIf(lastError, "-"),
+		Links:        t.links,
+	}}
+	if online {
+		v.SubStatus = "Online"
+		v.Status = "ON"
+	}
+	if !lastWOL.IsZero() {
+		if left := s.cfg.wolCooldown - time.Since(lastWOL); left > 0 && !online {
+			v.CoolingDown = true
+			v.cooldownLeft = left
+			v.CooldownMsg = fmt.Sprintf("Packet sent %s ago, wait %s before sending another",
+				time.Since(lastWOL).Round(time.Second), left.Round(time.Second))
+		}
+	}
+	return v
+}
+
 func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return "never"
@@ -316,15 +398,16 @@ func formatTime(t time.Time) string {
 func parseConfig(args []string, output io.Writer) (config, error) {
 	var cfg config
 	var configFile string
+	var single serverCfg // from -mac/-checkAddr and the [server] table
 
 	fs := flag.NewFlagSet("wolweb", flag.ContinueOnError)
 	fs.SetOutput(output)
 	fs.StringVar(&configFile, "config", "", "path to TOML config file")
 	fs.StringVar(&cfg.listenAddr, "listen", ":8080", "listen address, e.g. :80 or 0.0.0.0:8080")
-	fs.StringVar(&cfg.checkAddr, "checkAddr", "", "TCP address to check, e.g. 192.168.1.101:22 (required)")
+	fs.StringVar(&single.CheckAddr, "checkAddr", "", "TCP address to check, e.g. 192.168.1.101:22 (required)")
 	fs.DurationVar(&cfg.checkTimeout, "checkTimeout", 1*time.Second, "TCP check timeout")
 	fs.DurationVar(&cfg.checkEvery, "checkEvery", 5*time.Minute, "how often to refresh status in background")
-	fs.StringVar(&cfg.macAddr, "mac", "", "target MAC address (required)")
+	fs.StringVar(&single.MAC, "mac", "", "target MAC address (required)")
 	fs.StringVar(&cfg.broadcast, "broadcast", "255.255.255.255:9", "broadcast UDP address, e.g. 192.168.1.255:9")
 	fs.DurationVar(&cfg.wolCooldown, "cooldown", 30*time.Second, "minimum time between WoL sends")
 	fs.StringVar(&cfg.title, "title", "Server Power", "UI page title")
@@ -353,8 +436,25 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 		if u := md.Undecoded(); len(u) > 0 {
 			return config{}, fmt.Errorf("config file: unknown keys: %v", u)
 		}
-		if err := applyTOML(&cfg, tc, explicit); err != nil {
+		if err := applyTOML(&cfg, &single, tc, explicit); err != nil {
 			return config{}, err
+		}
+		if len(tc.Servers) > 0 {
+			if single.MAC != "" || single.CheckAddr != "" {
+				return config{}, errors.New("use either [[servers]] or mac/checkAddr, not both")
+			}
+			if len(tc.Links) > 0 {
+				return config{}, errors.New("top-level [[links]] cannot be combined with [[servers]]; put links under each server")
+			}
+			cfg.servers = tc.Servers
+		}
+	}
+	if cfg.servers == nil {
+		cfg.servers = []serverCfg{single}
+	}
+	for i := range cfg.servers {
+		if cfg.servers[i].Broadcast == "" {
+			cfg.servers[i].Broadcast = cfg.broadcast
 		}
 	}
 
@@ -366,7 +466,7 @@ func parseConfig(args []string, output io.Writer) (config, error) {
 
 // applyTOML overlays TOML values onto cfg, skipping anything set by an
 // explicit command-line flag.
-func applyTOML(cfg *config, tc tomlConfig, explicit map[string]bool) error {
+func applyTOML(cfg *config, single *serverCfg, tc tomlConfig, explicit map[string]bool) error {
 	str := func(flagName, v string, dst *string) {
 		if v != "" && !explicit[flagName] {
 			*dst = v
@@ -386,8 +486,8 @@ func applyTOML(cfg *config, tc tomlConfig, explicit map[string]bool) error {
 
 	s := tc.Server
 	str("listen", s.Listen, &cfg.listenAddr)
-	str("mac", s.Mac, &cfg.macAddr)
-	str("checkAddr", s.CheckAddr, &cfg.checkAddr)
+	str("mac", s.Mac, &single.MAC)
+	str("checkAddr", s.CheckAddr, &single.CheckAddr)
 	str("broadcast", s.Broadcast, &cfg.broadcast)
 	str("title", s.Title, &cfg.title)
 	for _, d := range []struct {
@@ -403,26 +503,11 @@ func applyTOML(cfg *config, tc tomlConfig, explicit map[string]bool) error {
 			return err
 		}
 	}
-	cfg.links = tc.Links
+	single.Links = tc.Links
 	return nil
 }
 
 func (c config) validate() error {
-	if c.macAddr == "" {
-		return errors.New("mac is required")
-	}
-	if _, err := net.ParseMAC(c.macAddr); err != nil {
-		return fmt.Errorf("invalid mac %q: %w", c.macAddr, err)
-	}
-	if c.checkAddr == "" {
-		return errors.New("checkAddr is required")
-	}
-	if _, _, err := net.SplitHostPort(c.checkAddr); err != nil {
-		return fmt.Errorf("invalid checkAddr %q: %w", c.checkAddr, err)
-	}
-	if _, _, err := net.SplitHostPort(c.broadcast); err != nil {
-		return fmt.Errorf("invalid broadcast %q: %w", c.broadcast, err)
-	}
 	if c.listenAddr == "" {
 		return errors.New("listen must not be empty")
 	}
@@ -432,7 +517,48 @@ func (c config) validate() error {
 	if c.wolCooldown < 0 {
 		return errors.New("cooldown must not be negative")
 	}
-	for _, l := range c.links {
+	if _, _, err := net.SplitHostPort(c.broadcast); err != nil {
+		return fmt.Errorf("invalid broadcast %q: %w", c.broadcast, err)
+	}
+
+	names := map[string]bool{}
+	for i, sc := range c.servers {
+		if len(c.servers) > 1 {
+			if sc.Name == "" {
+				return fmt.Errorf("server #%d: name is required when several servers are configured", i+1)
+			}
+			if names[sc.Name] {
+				return fmt.Errorf("duplicate server name %q", sc.Name)
+			}
+			names[sc.Name] = true
+		}
+		if err := sc.validate(); err != nil {
+			if sc.Name != "" {
+				return fmt.Errorf("server %q: %w", sc.Name, err)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (sc serverCfg) validate() error {
+	if sc.MAC == "" {
+		return errors.New("mac is required")
+	}
+	if _, err := net.ParseMAC(sc.MAC); err != nil {
+		return fmt.Errorf("invalid mac %q: %w", sc.MAC, err)
+	}
+	if sc.CheckAddr == "" {
+		return errors.New("checkAddr is required")
+	}
+	if _, _, err := net.SplitHostPort(sc.CheckAddr); err != nil {
+		return fmt.Errorf("invalid checkAddr %q: %w", sc.CheckAddr, err)
+	}
+	if _, _, err := net.SplitHostPort(sc.Broadcast); err != nil {
+		return fmt.Errorf("invalid broadcast %q: %w", sc.Broadcast, err)
+	}
+	for _, l := range sc.Links {
 		u, err := url.Parse(l.URL)
 		if err != nil || u.Scheme == "" {
 			return fmt.Errorf("link %q: invalid url %q (a scheme such as https:// is required)", l.Name, l.URL)

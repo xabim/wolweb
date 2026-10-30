@@ -9,7 +9,7 @@ A lightweight, minimal web service for remotely waking up computers on your home
 ## Overview
 
 `wolweb` provides a simple HTTP interface to:
-- Send Wake-on-LAN packets to power on home servers
+- Send Wake-on-LAN packets to power on one or more home servers
 - Monitor the online status of target devices
 - Manage WoL requests with cooldown protection
 
@@ -127,6 +127,34 @@ name = "Jellyfin"
 url = "http://192.168.1.100:8096"
 icon = "🎬"
 ```
+
+### Multiple servers
+
+To manage several machines, replace `mac`/`checkAddr` and the top-level `[[links]]` with one `[[servers]]` entry per machine. Each card in the UI has its own status, cooldown and Wake button. `listen`, `title`, `checkTimeout`, `checkEvery`, `cooldown` and `broadcast` stay in `[server]` and apply to all servers (a server may override `broadcast`).
+
+```toml
+[server]
+title = "Home"
+cooldown = "30s"
+
+[[servers]]
+name = "NAS"                  # required (and unique) when more than one server
+mac = "AA:BB:CC:DD:EE:01"
+checkAddr = "192.168.1.100:22"
+
+[[servers.links]]             # shown while this server is online
+name = "Files"
+url = "https://nas.home"
+icon = "📁"
+
+[[servers]]
+name = "Media"
+mac = "AA:BB:CC:DD:EE:02"
+checkAddr = "192.168.1.101:22"
+broadcast = "192.168.2.255:9" # optional per-server override
+```
+
+`[[servers]]` cannot be combined with `mac`/`checkAddr` (config or flags) or top-level `[[links]]`. The `-mac`/`-checkAddr` flags and the single-server layout above keep working unchanged. The wake endpoint is `POST /wake` with a `server` form field (the zero-based position in the file); it may be omitted when only one server is configured.
 
 **Important:** When the server is **online**, the UI will show all configured links as clickable buttons with their icons. When offline, only the WoL button is available.
 

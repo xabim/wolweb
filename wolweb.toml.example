@@ -47,3 +47,16 @@ icon = "🎬"
 name = "SSH"
 url = "ssh://user@192.168.1.100"
 icon = "🖥️"
+
+# Several machines? Drop mac/checkAddr above and the [[links]] tables, and
+# list each one instead (see "Multiple servers" in the README):
+#
+# [[servers]]
+# name = "NAS"
+# mac = "AA:BB:CC:DD:EE:01"
+# checkAddr = "192.168.1.100:22"
+#
+# [[servers.links]]
+# name = "Files"
+# url = "https://nas.home"
+# icon = "📁"

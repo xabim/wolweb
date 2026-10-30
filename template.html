@@ -8,6 +8,8 @@
   <style>
     body { font-family: -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:#0b1020; color:#e5e7eb; margin:0; }
     .wrap { max-width: 720px; margin: 0 auto; padding: 28px 18px; }
+    .page-title { font-size: 24px; margin: 0 0 16px; }
+    .card + .card { margin-top: 16px; }
     .card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.10); border-radius: 16px; padding: 18px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
     .row { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
     .title { font-size: 20px; font-weight: 700; letter-spacing: 0.2px; }
@@ -33,10 +35,12 @@
 </head>
 <body>
   <div class="wrap">
+    {{if .Multi}}<h1 class="page-title">{{.Title}}</h1>{{end}}
+    {{range .Servers}}
     <div class="card">
       <div class="row">
         <div>
-          <div class="title">{{.Title}}</div>
+          <div class="title">{{.Name}}</div>
           <div class="muted">{{.SubStatus}} — updated: {{.LastCheckStr}}</div>
         </div>
         <div class="pill">
@@ -61,6 +65,7 @@
       </div>
 
       <form method="POST" action="/wake" style="margin-top:14px">
+        <input type="hidden" name="server" value="{{.ID}}">
         <button class="btn btn-wake" type="submit"{{if or .Online .CoolingDown}} disabled{{end}}>Wake On LAN</button>
         {{if .CoolingDown}}<div class="muted" style="margin-top:8px">{{.CooldownMsg}}</div>{{end}}
       </form>
@@ -78,9 +83,9 @@
         </div>
       </div>
       {{end}}
-
-      <div class="foot">Local time: {{.Now}}</div>
     </div>
+    {{end}}
+    <div class="foot">Local time: {{.Now}}</div>
   </div>
 </body>
 </html>

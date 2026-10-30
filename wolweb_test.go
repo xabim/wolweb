@@ -96,12 +96,14 @@ func testServer(t *testing.T, cfg config) *server {
 
 func TestHomeEscapesAndLinks(t *testing.T) {
 	s := testServer(t, config{
-		title:     `<script>alert(1)</script>`,
-		checkAddr: "127.0.0.1:1",
-		links:     []link{{Name: "SSH", URL: "ssh://user@host", Icon: "x"}},
+		title: `<script>alert(1)</script>`,
+		servers: []serverCfg{{
+			CheckAddr: "127.0.0.1:1",
+			Links:     []link{{Name: "SSH", URL: "ssh://user@host", Icon: "x"}},
+		}},
 	})
-	s.st.online = true
-	s.st.lastError = `<img src=x onerror=alert(1)>`
+	s.targets[0].st.online = true
+	s.targets[0].st.lastError = `<img src=x onerror=alert(1)>`
 
 	rec := httptest.NewRecorder()
 	s.routes(context.Background()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -124,7 +126,7 @@ func TestHomeEscapesAndLinks(t *testing.T) {
 }
 
 func TestLinksHiddenWhenOffline(t *testing.T) {
-	s := testServer(t, config{links: []link{{Name: "A", URL: "https://a.example", Icon: "x"}}})
+	s := testServer(t, config{servers: []serverCfg{{Links: []link{{Name: "A", URL: "https://a.example", Icon: "x"}}}}})
 	rec := httptest.NewRecorder()
 	s.routes(context.Background()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if strings.Contains(rec.Body.String(), "a.example") {
@@ -141,11 +143,13 @@ func TestWakeHandler(t *testing.T) {
 	defer pc.Close()
 
 	s := testServer(t, config{
-		macAddr:      "aa:bb:cc:dd:ee:ff",
-		broadcast:    pc.LocalAddr().String(),
-		checkAddr:    "127.0.0.1:1",
 		checkTimeout: 50 * time.Millisecond,
 		wolCooldown:  time.Hour,
+		servers: []serverCfg{{
+			MAC:       "aa:bb:cc:dd:ee:ff",
+			Broadcast: pc.LocalAddr().String(),
+			CheckAddr: "127.0.0.1:1",
+		}},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -208,13 +212,139 @@ func TestParseConfigRequiresConfigOrFlags(t *testing.T) {
 }
 
 func TestHomeShowsCooldown(t *testing.T) {
-	s := testServer(t, config{checkAddr: "127.0.0.1:1", wolCooldown: time.Hour})
-	s.st.lastWOL = time.Now().Add(-time.Minute)
+	s := testServer(t, config{wolCooldown: time.Hour, servers: []serverCfg{{CheckAddr: "127.0.0.1:1"}}})
+	s.targets[0].st.lastWOL = time.Now().Add(-time.Minute)
 
 	rec := httptest.NewRecorder()
 	s.handleHome(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := rec.Body.String()
 	if !strings.Contains(body, "Packet sent") || !strings.Contains(body, "disabled") {
 		t.Errorf("expected cooldown notice and disabled button, got:\n%s", body)
+	}
+}
+
+const twoServers = `[server]
+broadcast = "192.168.1.255:9"
+
+[[servers]]
+name = "NAS"
+mac = "aa:bb:cc:dd:ee:01"
+checkAddr = "10.0.0.1:22"
+
+[[servers.links]]
+name = "Files"
+url = "https://nas.home"
+
+[[servers]]
+name = "Media"
+mac = "aa:bb:cc:dd:ee:02"
+checkAddr = "10.0.0.2:22"
+broadcast = "10.0.0.255:9"
+`
+
+func TestParseConfigMultipleServers(t *testing.T) {
+	cfg, err := parseConfig([]string{"-config", writeConfig(t, twoServers)}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.servers) != 2 {
+		t.Fatalf("servers = %d, want 2", len(cfg.servers))
+	}
+	if got := cfg.servers[0].Broadcast; got != "192.168.1.255:9" {
+		t.Errorf("broadcast = %q, want inherited default", got)
+	}
+	if got := cfg.servers[1].Broadcast; got != "10.0.0.255:9" {
+		t.Errorf("broadcast = %q, want per-server override", got)
+	}
+	if len(cfg.servers[0].Links) != 1 || len(cfg.servers[1].Links) != 0 {
+		t.Errorf("links not attached per server: %+v", cfg.servers)
+	}
+}
+
+func TestParseConfigMultipleServersErrors(t *testing.T) {
+	srv := func(name string) string {
+		n := ""
+		if name != "" {
+			n = "name = \"" + name + "\"\n"
+		}
+		return "[[servers]]\n" + n + "mac = \"aa:bb:cc:dd:ee:ff\"\ncheckAddr = \"10.0.0.1:22\"\n"
+	}
+	tests := map[string]string{
+		"missing name":    srv("a") + srv(""),
+		"duplicate name":  srv("a") + srv("a"),
+		"mixed with mac":  "[server]\nmac = \"aa:bb:cc:dd:ee:ff\"\n" + srv("a"),
+		"top-level links": "[[links]]\nname=\"x\"\nurl=\"https://x\"\n" + srv("a"),
+		"bad server mac":  srv("a") + "[[servers]]\nname = \"b\"\nmac = \"nope\"\ncheckAddr = \"10.0.0.2:22\"\n",
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseConfig([]string{"-config", writeConfig(t, body)}, &bytes.Buffer{}); err == nil {
+				t.Error("expected error")
+			}
+		})
+	}
+}
+
+func TestWakeSelectsServer(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("udp unavailable: %v", err)
+	}
+	defer pc.Close()
+
+	bc := pc.LocalAddr().String()
+	s := testServer(t, config{
+		checkTimeout: 50 * time.Millisecond,
+		wolCooldown:  time.Hour,
+		title:        "Home",
+		servers: []serverCfg{
+			{Name: "A", MAC: "aa:bb:cc:dd:ee:01", Broadcast: bc, CheckAddr: "127.0.0.1:1"},
+			{Name: "B", MAC: "aa:bb:cc:dd:ee:02", Broadcast: bc, CheckAddr: "127.0.0.1:1"},
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := s.routes(ctx)
+
+	post := func(form string) int {
+		req := httptest.NewRequest(http.MethodPost, "/wake", strings.NewReader(form))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if c := post(""); c != http.StatusBadRequest {
+		t.Errorf("no server with several configured = %d, want 400", c)
+	}
+	if c := post("server=7"); c != http.StatusBadRequest {
+		t.Errorf("unknown server = %d, want 400", c)
+	}
+	if c := post("server=1"); c != http.StatusSeeOther {
+		t.Fatalf("POST = %d, want 303", c)
+	}
+
+	buf := make([]byte, 256)
+	_ = pc.SetReadDeadline(time.Now().Add(time.Second))
+	n, _, err := pc.ReadFrom(buf)
+	if err != nil || n != 102 {
+		t.Fatalf("expected magic packet, got n=%d err=%v", n, err)
+	}
+	if got := net.HardwareAddr(buf[6:12]).String(); got != "aa:bb:cc:dd:ee:02" {
+		t.Errorf("woke %s, want server B", got)
+	}
+
+	// Only B is cooling down; A can still be woken.
+	if s.targets[0].st.lastWOL.IsZero() == false || s.targets[1].st.lastWOL.IsZero() {
+		t.Error("cooldown state leaked between servers")
+	}
+
+	rec := httptest.NewRecorder()
+	s.handleHome(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	for _, want := range []string{">A<", ">B<", `value="0"`, `value="1"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page missing %q", want)
+		}
 	}
 }
